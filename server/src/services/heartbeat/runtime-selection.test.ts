@@ -460,6 +460,43 @@ describe.skipIf(!support.supported)("heartbeat runtime selection boundary", () =
     expect(buildNativeModelEnvelope(selected.nativeExecution).completionContract).toEqual(contract);
   });
 
+  it("does not bump the completion contract for reviewer or operator guidance", async () => {
+    const { input, issue, agent } = await fixture();
+    input.task.issueContext = {
+      createdByUserId: "author",
+      responsibleUserId: "operator",
+      conversationUserId: null,
+    } as typeof input.task.issueContext;
+    const selected = await selectHeartbeatRuntime(db, input);
+    if (!selected.selected || !selected.nativeExecution) throw new Error("Expected native selection");
+    expect(selected.nativeExecution.completionContract.contract.revision).toBe("1");
+
+    const wake = async (comment: { body: string; authorType: string; authorUserId: string | null }) => {
+      const [run] = await db.insert(heartbeatRuns).values({
+        companyId: issue.companyId, agentId: agent.id, issueId: issue.id, scopeKind: "issue", status: "running",
+      }).returning();
+      const next = {
+        ...input,
+        run,
+        session: { ...input.session, persistedNativeExecutionInput: null, persistedRunnerProfile: {} },
+        task: { ...input.task, safeWakeComments: [{ id: randomUUID(), ...comment }] },
+      };
+      const result = await selectHeartbeatRuntime(db, next);
+      if (!result.selected || !result.nativeExecution) throw new Error("Expected native selection");
+      return result.nativeExecution.completionContract.contract;
+    };
+
+    const reviewed = await wake({ body: "Request a smaller diff.", authorType: "agent", authorUserId: null });
+    expect(reviewed.revision).toBe("1");
+    expect(reviewed.criteria[0]?.requirement).not.toContain("smaller diff");
+    const guided = await wake({ body: "Carry on, the source is unchanged.", authorType: "user", authorUserId: "operator" });
+    expect(guided.revision).toBe("1");
+    expect(guided.criteria[0]?.requirement).not.toContain("source is unchanged");
+    const directed = await wake({ body: "Also cover the empty state.", authorType: "user", authorUserId: "author" });
+    expect(directed.revision).toBe("2");
+    expect(directed.criteria[0]?.requirement).toContain("empty state");
+  });
+
   it("keeps recovery out of live preparation before the workspace descriptor exists", async () => {
     const { input, run, issue } = await fixture();
     input.workspace.executionTarget = sandbox;

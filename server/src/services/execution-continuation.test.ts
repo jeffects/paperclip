@@ -366,6 +366,23 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
       }
     });
 
+    it("does not treat a later operator comment as new author direction", async () => {
+      await db.update(issues).set({ createdByUserId: "local-board" }).where(eq(issues.id, issueId));
+      const operatorId = randomUUID();
+      await db.insert(issueComments).values({
+        id: operatorId, companyId, issueId, authorType: "user", authorUserId: "operator",
+        body: "Guidance only. Do not change the source.", createdAt: new Date("2026-09-08T12:00:00Z"),
+      });
+      try {
+        const context = await build();
+        expect(context.objective).toBe("Now summarize my recent Gmail emails.");
+        expect(context.messages.map((message) => message.id)).toContain(operatorId);
+      } finally {
+        await db.delete(issueComments).where(eq(issueComments.id, operatorId));
+        await db.update(issues).set({ createdByUserId: null }).where(eq(issues.id, issueId));
+      }
+    });
+
     it("keeps Local CLI run-authored comments as history without promoting them to human direction", async () => {
       const id = randomUUID();
       await db.insert(issueComments).values({ id, companyId, issueId, authorType: "user",

@@ -361,6 +361,7 @@ import {
 import {
   applyIssueExecutionPolicyTransition,
   normalizeIssueExecutionPolicy,
+  reviewRoundStopComment,
   parseIssueExecutionState,
   redactIssueMonitorExternalRef,
   setIssueExecutionPolicyMonitorScheduledBy,
@@ -10574,6 +10575,13 @@ export function issueRoutes(
                 createdByRunId: actor.runId ?? null,
               });
             }
+            if (transition.reviewRoundStop) {
+              const notice = reviewRoundStopComment(transition.reviewRoundStop);
+              await svc.addComment(lockedIssue.id, notice.body, {}, {
+                authorType: "system",
+                presentation: notice.presentation,
+              }, tx);
+            }
           }
 
           const issueUpdate = {
@@ -14848,7 +14856,7 @@ export function issueRoutes(
         throw unprocessable("unblockDescriptor requires blocked status");
       }
       const descriptor = updateFields.unblockDescriptor ?? null;
-      if (descriptor && typeof descriptor === "object") {
+      if (!transition.reviewRoundStop && descriptor && typeof descriptor === "object") {
         const owner = descriptor.owner;
         if (
           req.actor.type === "agent" &&
@@ -15425,6 +15433,13 @@ export function issueRoutes(
                 body: decision.body,
                 createdByRunId: actor.runId ?? null,
               });
+            }
+            if (transition.reviewRoundStop) {
+              const notice = reviewRoundStopComment(transition.reviewRoundStop);
+              await svc.addComment(updated.id, notice.body, {}, {
+                authorType: "system",
+                presentation: notice.presentation,
+              }, tx);
             }
 
             if (shouldRelayStop) {

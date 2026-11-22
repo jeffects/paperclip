@@ -16,6 +16,7 @@ import { hasConversationContinuationPolicy } from "./conversation-continuation.j
 import { queuedCommentIdsFromWakePayload } from "./issue-queued-comment-queue.js";
 import { queuedInteractionId } from "./queued-interaction-response.js";
 import { childReviewOutcomes } from "./native-runtime/child-review-outcomes.js";
+import { isContractDirectionComment } from "./native-runtime/completion-contracts.js";
 import { isCompletedOnboardingHandoffWake } from "./chat-completion-delivery.js";
 import { githubRecoveryReceipts } from "./chat-channels/github/recovery-receipts.js";
 import { readTaskRetryIntent } from "./task-retry.js";
@@ -375,9 +376,16 @@ export async function buildExecutionContinuation(input: {
           ),
         }
       : undefined;
+  const presentationKindById = new Map(rows.map((row) => [row.id, row.presentation?.kind ?? null]));
   const latestRequest = messages.findLast(
     (row) =>
-      row.authorType === "user" && !row.createdByRunId && !row.deleted && row.body.trim().length > 0,
+      row.authorType === "user" && !row.createdByRunId && !row.deleted && row.body.trim().length > 0 &&
+      isContractDirectionComment({
+        authorType: row.authorType,
+        authorUserId: row.authorId,
+        createdByRunId: row.createdByRunId,
+        presentationKind: presentationKindById.get(row.id) ?? null,
+      }, issue),
   );
   const hashObjectiveSource = (value: string) => createHash("sha256").update(value.trim()).digest("hex");
   const objectiveSource = latestRequest

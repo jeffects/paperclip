@@ -55,18 +55,56 @@ type TransitionInput = {
   monitorExplicitlyUpdated?: boolean;
 };
 
+export interface ReviewRoundStop {
+  responsibleUserId: string | null;
+  stageId: string;
+  changesRequestedCount: number;
+  findings: string;
+}
+
 type TransitionResult = {
   patch: Record<string, unknown>;
   decision?: Pick<IssueExecutionDecision, "stageId" | "stageType" | "outcome" | "body">;
   workflowControlledAssignment?: boolean;
+  /** Third consecutive agent rejection. Execution stops and the human is notified. */
+  reviewRoundStop?: ReviewRoundStop;
 };
 
 /**
  * Consecutive agent-initiated changes-requested rounds tolerated on one stage
- * before the pending review escalates to the responsible human. Policies can
- * override via `maxReviewRounds`; human decisions always reset the counter.
+ * before execution stops. Policies can override via `maxReviewRounds`. Human
+ * decisions always reset the counter. The stop keeps the count and the latest
+ * findings, notifies the responsible human, and does not approve or reset.
  */
 export const DEFAULT_MAX_REVIEW_ROUNDS = 3;
+
+export function reviewRoundStopComment(stop: ReviewRoundStop) {
+  const audience = stop.responsibleUserId ? "The responsible person" : "A board member";
+  return {
+    body: [
+      `Review stopped after ${stop.changesRequestedCount} consecutive rejections.`,
+      "Execution is stopped. The rejection count and the latest findings are kept.",
+      "This notice is not an approval and it does not reset the count.",
+      `${audience} can read the findings and choose the next step.`,
+      "",
+      "Latest findings:",
+      stop.findings,
+    ].join("\n"),
+    presentation: {
+      kind: "system_notice" as const,
+      tone: "warning" as const,
+      title: "Review stopped",
+      detailsDefaultOpen: true,
+      density: "compact" as const,
+    },
+  };
+}
+
+function reviewRoundStopAction(stop: ReviewRoundStop) {
+  const findings = stop.findings.replace(/\s+/g, " ").trim();
+  const clipped = findings.length > 1_200 ? `${findings.slice(0, 1_197)}...` : findings;
+  return `Review stopped after ${stop.changesRequestedCount} consecutive rejections. Latest findings: ${clipped} This is not an approval and it does not reset the count.`;
+}
 
 const COMPLETED_STATUS: IssueExecutionState["status"] = "completed";
 const PENDING_STATUS: IssueExecutionState["status"] = "pending";
@@ -447,9 +485,8 @@ function resolveMaxReviewRounds(policy: IssueExecutionPolicy | null): number {
 }
 
 /**
- * The human a review stage escalates to when agents exhaust their
- * changes-requested rounds. Without one the loop keeps handing back to the
- * return assignee (pre-existing behavior) rather than stalling the stage.
+ * The human notified when agents exhaust their changes-requested rounds.
+ * Without one, the stop is still recorded and the board inbox owns it.
  */
 function reviewEscalationUserId(issue: IssueLike): string | null {
   const responsible = issue.responsibleUserId?.trim();
@@ -883,28 +920,29 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
         const nextRounds = actorIsHuman ? 0 : (existingState.changesRequestedCount ?? 0) + 1;
         if (!actorIsHuman && nextRounds >= resolveMaxReviewRounds(input.policy)) {
           const escalationUserId = reviewEscalationUserId(input.issue);
-          if (escalationUserId) {
-            // Rounds exhausted: keep the stage pending but hand it to the
-            // responsible human instead of bouncing back to the implementer.
-            // The recorded changes-requested decision carries the reviewer's
-            // reasoning; the human approves, requests changes (resetting the
-            // counter), or re-scopes.
-            buildPendingStagePatch({
-              patch,
-              previous: existingState,
-              policy: input.policy,
-              stage: activeStage,
-              participant: { type: "user", agentId: null, userId: escalationUserId },
-              returnAssignee: existingState.returnAssignee,
-              reviewRequest: effectiveReviewRequest,
-              changesRequestedCount: nextRounds,
-            });
-            return {
-              patch,
-              decision,
-              workflowControlledAssignment: true,
-            };
-          }
+          const reviewRoundStop: ReviewRoundStop = {
+            responsibleUserId: escalationUserId,
+            stageId: activeStage.id,
+            changesRequestedCount: nextRounds,
+            findings: decision.body,
+          };
+          // Stop the agent loop. Keep the stage, the count, and the recorded
+          // findings. Do not assign the task so that only one human can move
+          // it, and do not approve or reset the count.
+          patch.status = "blocked";
+          patch.assigneeAgentId = null;
+          patch.assigneeUserId = null;
+          patch.unblockDescriptor = {
+            owner: escalationUserId ? { userId: escalationUserId } : "board",
+            action: reviewRoundStopAction(reviewRoundStop),
+          };
+          patch.executionState = buildChangesRequestedState(existingState, activeStage, nextRounds);
+          return {
+            patch,
+            decision,
+            workflowControlledAssignment: true,
+            reviewRoundStop,
+          };
         }
         patch.status = "in_progress";
         Object.assign(patch, patchForPrincipal(existingState.returnAssignee));

@@ -186,6 +186,19 @@ export async function prepareHeartbeatTaskContext(db: Db, input: HeartbeatTaskCo
             {
               id: comment.id,
               body: fastResponseHistoryBody({ body: comment.body, origin: typeof comment.origin === "string" ? comment.origin : null }),
+              authorType: typeof comment.authorType === "string" ? comment.authorType : null,
+              authorUserId: (() => {
+                const author = comment.author;
+                if (!author || typeof author !== "object") return null;
+                const record = author as { type?: unknown; id?: unknown };
+                return record.type === "user" && typeof record.id === "string" ? record.id : null;
+              })(),
+              presentationKind: (() => {
+                const presentation = comment.presentation;
+                if (!presentation || typeof presentation !== "object") return null;
+                const kind = (presentation as { kind?: unknown }).kind;
+                return typeof kind === "string" ? kind : null;
+              })(),
               attachments: Array.isArray(comment.attachments)
                 ? comment.attachments.flatMap((attachment) => {
                     const descriptor = parseObject(attachment);

@@ -3,6 +3,8 @@ import { describe, expect, it } from "vitest";
 import {
   buildNativeCompletionContract,
   buildNativeCompletionContractSources,
+  contractDirectionComments,
+  isContractDirectionComment,
   nativeCompletionRequestsWithSources,
   nativeCompletionSource,
   nativeImmediateObjectiveSource,
@@ -270,5 +272,37 @@ describe("completion source ownership", () => {
     const comments = [{ id: "file", body: "", attachments: [{ id: "attachment" }] }];
     expect(nativeCompletionRequestsWithSources(comments).sources).toEqual([null]);
     expect(nativeCompletionRequestsWithSources(comments, { requiredFullWakeCommentCount: 8 }).sources).toEqual([null]);
+  });
+});
+
+describe("contract direction comments", () => {
+  const task = { createdByUserId: "author", responsibleUserId: "operator", conversationUserId: null };
+
+  it("keeps the author's comment and drops operator, reviewer, and system guidance", () => {
+    const comments = [
+      { id: "author", body: "Ship the reviewed change.", authorType: "user", authorUserId: "author" },
+      { id: "operator", body: "Looks fine, carry on.", authorType: "user", authorUserId: "operator" },
+      { id: "reviewer", body: "Request a smaller diff.", authorType: "agent", authorUserId: null },
+      { id: "notice", body: "Workspace ready", authorType: "user", authorUserId: "author", presentationKind: "system_notice" },
+      { id: "progress", body: "Still working", authorType: "user", authorUserId: "author", createdByRunId: "run" },
+    ];
+    expect(contractDirectionComments(comments, task).map((comment) => comment.id)).toEqual(["author"]);
+    expect(isContractDirectionComment({ authorType: "user", authorUserId: "operator" }, task)).toBe(false);
+  });
+
+  it("keeps legacy comments that do not name an author", () => {
+    expect(isContractDirectionComment({}, task)).toBe(true);
+    expect(isContractDirectionComment({ authorType: "user", authorUserId: "person" }, null)).toBe(true);
+  });
+
+  it("lets the conversation user revise a chat contract", () => {
+    expect(isContractDirectionComment(
+      { authorType: "user", authorUserId: "speaker" },
+      { createdByUserId: "author", conversationUserId: "speaker" },
+    )).toBe(true);
+    expect(isContractDirectionComment(
+      { authorType: "user", authorUserId: "author" },
+      { createdByUserId: "author", conversationUserId: "speaker" },
+    )).toBe(false);
   });
 });

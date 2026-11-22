@@ -2112,28 +2112,37 @@ describe("review round circuit breaker", () => {
     });
   });
 
-  it("escalates the pending stage to the responsible human at the round cap", () => {
+  it("stops execution and notifies the responsible human at the round cap", () => {
+    const findings = "Round three feedback — still not converging";
     const result = applyIssueExecutionPolicyTransition({
       issue: reviewPendingIssue({}, { changesRequestedCount: 2 }),
       policy,
       requestedStatus: "in_progress",
       requestedAssigneePatch: {},
       actor: { agentId: qaAgentId },
-      commentBody: "Round three feedback — still not converging",
+      commentBody: findings,
     });
 
-    // The decision is still recorded, but the stage stays pending with the
-    // responsible human as participant instead of bouncing to the executor.
-    expect(result.decision).toMatchObject({ outcome: "changes_requested" });
-    expect(result.patch.status).toBe("in_review");
+    expect(result.decision).toMatchObject({ outcome: "changes_requested", body: findings });
+    expect(result.patch.status).toBe("blocked");
     expect(result.patch.assigneeAgentId).toBeNull();
-    expect(result.patch.assigneeUserId).toBe(boardUserId);
-    expect(result.patch.executionState).toMatchObject({
-      status: "pending",
-      currentStageId: reviewStageId,
-      currentParticipant: { type: "user", userId: boardUserId },
-      changesRequestedCount: 3,
+    expect(result.patch.assigneeUserId).toBeNull();
+    expect(result.patch.unblockDescriptor).toMatchObject({
+      owner: { userId: boardUserId },
+      action: expect.stringContaining(findings),
     });
+    expect(result.patch.executionState).toMatchObject({
+      status: "changes_requested",
+      currentStageId: reviewStageId,
+      changesRequestedCount: 3,
+      lastDecisionOutcome: "changes_requested",
+    });
+    expect(result.reviewRoundStop).toMatchObject({
+      responsibleUserId: boardUserId,
+      changesRequestedCount: 3,
+      findings,
+    });
+    expect(result.patch.executionState).not.toMatchObject({ status: "completed", lastDecisionOutcome: "approved" });
   });
 
   it("keeps the escalated hold sticky across unrelated transitions", () => {
@@ -2263,9 +2272,9 @@ describe("review round circuit breaker", () => {
     });
   });
 
-  it("keeps handing back to the executor when no responsible human exists", () => {
+  it("stops execution for the board when no responsible human exists", () => {
     const result = applyIssueExecutionPolicyTransition({
-      issue: reviewPendingIssue({ responsibleUserId: null }, { changesRequestedCount: 9 }),
+      issue: reviewPendingIssue({ responsibleUserId: null, createdByUserId: null }, { changesRequestedCount: 9 }),
       policy,
       requestedStatus: "in_progress",
       requestedAssigneePatch: {},
@@ -2273,12 +2282,14 @@ describe("review round circuit breaker", () => {
       commentBody: "Round ten feedback",
     });
 
-    expect(result.patch.status).toBe("in_progress");
-    expect(result.patch.assigneeAgentId).toBe(coderAgentId);
+    expect(result.patch.status).toBe("blocked");
+    expect(result.patch.assigneeAgentId).toBeNull();
+    expect(result.patch.unblockDescriptor).toMatchObject({ owner: "board" });
     expect(result.patch.executionState).toMatchObject({
       status: "changes_requested",
       changesRequestedCount: 10,
     });
+    expect(result.reviewRoundStop?.responsibleUserId).toBeNull();
   });
 
   it("honors a policy maxReviewRounds override", () => {
@@ -2314,11 +2325,13 @@ describe("review round circuit breaker", () => {
       commentBody: "First and only agent round",
     });
 
-    expect(result.patch.assigneeUserId).toBe(boardUserId);
+    expect(result.patch.status).toBe("blocked");
+    expect(result.patch.assigneeUserId).toBeNull();
+    expect(result.patch.unblockDescriptor).toMatchObject({ owner: { userId: boardUserId } });
     expect(result.patch.executionState).toMatchObject({
-      status: "pending",
-      currentParticipant: { type: "user", userId: boardUserId },
+      status: "changes_requested",
       changesRequestedCount: 1,
     });
+    expect(result.reviewRoundStop?.changesRequestedCount).toBe(1);
   });
 });

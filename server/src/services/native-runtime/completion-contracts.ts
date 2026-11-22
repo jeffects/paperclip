@@ -27,7 +27,51 @@ type CompletionComment = {
   id?: string;
   body: string;
   attachments?: readonly unknown[];
+  authorType?: string | null;
+  authorUserId?: string | null;
+  createdByRunId?: string | null;
+  presentationKind?: string | null;
 };
+
+export interface ContractDirectionTask {
+  createdByUserId?: string | null;
+  responsibleUserId?: string | null;
+  conversationUserId?: string | null;
+}
+
+/**
+ * A comment revises the completion contract only when it is new direction from
+ * the task's human author. Operator guidance, review findings, system notices,
+ * and run-authored progress stay in the conversation and do not bump the
+ * contract revision. Callers that omit author metadata keep the previous
+ * behavior so older wake payloads still supply their request text.
+ */
+export function isContractDirectionComment(
+  comment: Pick<CompletionComment, "authorType" | "authorUserId" | "createdByRunId" | "presentationKind">,
+  task: ContractDirectionTask | null | undefined,
+): boolean {
+  if (comment.presentationKind === "system_notice") return false;
+  if (comment.createdByRunId) return false;
+  if (comment.authorType === "agent" || comment.authorType === "system") return false;
+  if (!comment.authorType && !comment.authorUserId) return true;
+  if (comment.authorType && comment.authorType !== "user") return false;
+  const authorUserId = comment.authorUserId ?? null;
+  if (!authorUserId) return false;
+  const conversationUserId = task?.conversationUserId ?? null;
+  if (conversationUserId) return authorUserId === conversationUserId;
+  const createdByUserId = task?.createdByUserId ?? null;
+  if (createdByUserId) return authorUserId === createdByUserId;
+  const responsibleUserId = task?.responsibleUserId ?? null;
+  if (responsibleUserId) return authorUserId === responsibleUserId;
+  return true;
+}
+
+export function contractDirectionComments<T extends CompletionComment>(
+  comments: readonly T[],
+  task: ContractDirectionTask | null | undefined,
+): T[] {
+  return comments.filter((comment) => isContractDirectionComment(comment, task));
+}
 
 export function nativeCompletionSource(kind: NativeCompletionSource["kind"], id: string, content: string): NativeCompletionSource {
   return { kind, id, revision: createHash("sha256").update(content.trim()).digest("hex") };
