@@ -50,6 +50,8 @@ import {
   isUnusedNativeSessionBootstrap,
   isUnusedLegacyNativeRetryReplacement,
   materializeNativeInteractionResponses,
+  contractDirectionComments,
+  isContractDirectionComment,
   nativeCompletionRequestsWithSources,
   nativeCompletionSource,
   nativeImmediateObjectiveSource,
@@ -360,12 +362,18 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
       : undefined;
     const immediateCompletion = (() => {
       if (nativeReviewRequest) return { requests: [nativeReviewRequest], sources: [null] };
+      const directionTask = {
+        createdByUserId: issueContext?.createdByUserId ?? null,
+        responsibleUserId: issueContext?.responsibleUserId ?? null,
+        conversationUserId: issueContext?.conversationUserId ?? null,
+      };
+      const wakeComments: Parameters<typeof nativeCompletionRequestsWithSources>[0] = safeWakeComments.length > 0
+        ? safeWakeComments
+        : safeWakeCommentContext?.body
+          ? [safeWakeCommentContext]
+          : [];
       const { requests, sources } = nativeCompletionRequestsWithSources(
-        safeWakeComments.length > 0
-          ? safeWakeComments
-          : safeWakeCommentContext?.body
-            ? [safeWakeCommentContext]
-            : [],
+        contractDirectionComments(wakeComments, directionTask),
         {
           requiredFullWakeCommentCount:
             paperclipWakePayload?.fallbackFetchNeeded === true &&
@@ -388,7 +396,12 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
             message.authorType === "user" &&
             !message.createdByRunId &&
             !message.deleted &&
-            message.body.trim().length > 0,
+            message.body.trim().length > 0 &&
+            isContractDirectionComment({
+              authorType: message.authorType,
+              authorUserId: message.authorId,
+              createdByRunId: message.createdByRunId,
+            }, directionTask),
         );
       const latestRequest = latestComment?.body;
       if (

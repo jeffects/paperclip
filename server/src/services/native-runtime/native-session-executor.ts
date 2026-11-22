@@ -6580,13 +6580,50 @@ function idleWarmNativeSessionOwnerRunId(input: {
     : undefined;
 }
 
+/** An external checkpoint marker is not an unreadable identity. Rehydrate it
+ * for a local author handback and for a non-reattach restart. A live reattach
+ * still owns its journal, and a normal local journal keeps its owner checks. */
+export function shouldRehydrateExternalControllerMarker(input: {
+  mode: "per_turn" | "warm";
+  expectedMode: "per_turn" | "warm";
+  restartKind?: string | null;
+  remote: boolean;
+  plainIdentity: boolean;
+  externalIdentity: boolean;
+}): boolean {
+  if (input.mode !== input.expectedMode) return false;
+  if (input.restartKind === "reattach_existing_runner" || input.restartKind === "reattach_remote_runner") return false;
+  const externalOnly = !input.plainIdentity && input.externalIdentity;
+  if (input.restartKind && !externalOnly) return false;
+  if (!input.remote && !externalOnly) return false;
+  return true;
+}
+
+function controllerRootNeedsRehydration(input: {
+  execution: NativeExecutionInput;
+  runnerExecutionTarget?: AdapterExecutionTarget | null;
+  restartRecovery?: NativeRestartRecoveryClaim;
+  expectedMode: "per_turn" | "warm";
+}): boolean {
+  const mode = input.execution.session.lifecyclePolicy.mode;
+  const remote = input.runnerExecutionTarget?.kind === "remote";
+  const restartKind = input.restartRecovery?.kind ?? null;
+  if (mode !== input.expectedMode) return false;
+  if (!restartKind && remote) return true;
+  const root = scopedRunnerdStateRoot(input.execution);
+  const plainIdentity = readRunnerdDurableIdentity(root) !== null;
+  const externalIdentity = !plainIdentity && readRunnerdDurableIdentity(root, true) !== null;
+  return shouldRehydrateExternalControllerMarker({
+    mode, expectedMode: input.expectedMode, restartKind, remote, plainIdentity, externalIdentity,
+  });
+}
+
 async function restorePerTurnRunnerdController(input: {
   db: Db; execution: NativeExecutionInput;
   runnerExecutionTarget?: AdapterExecutionTarget | null;
   restartRecovery?: NativeRestartRecoveryClaim;
 }): Promise<void> {
-  if (input.restartRecovery || input.runnerExecutionTarget?.kind !== "remote" ||
-      input.execution.session.lifecyclePolicy.mode !== "per_turn") return;
+  if (!controllerRootNeedsRehydration({ ...input, expectedMode: "per_turn" })) return;
   const root = scopedRunnerdStateRoot(input.execution);
   await restoreDurableHarnessForExecution(input.db, input.execution, root);
   const identity = readRunnerdDurableIdentity(root);
@@ -6760,8 +6797,7 @@ async function restoreWarmRunnerdController(input: {
   runnerExecutionTarget?: AdapterExecutionTarget | null;
   restartRecovery?: NativeRestartRecoveryClaim;
 }): Promise<void> {
-  if (input.restartRecovery || input.runnerExecutionTarget?.kind !== "remote" ||
-      input.execution.session.lifecyclePolicy.mode !== "warm") return;
+  if (!controllerRootNeedsRehydration({ ...input, expectedMode: "warm" })) return;
   const root = scopedRunnerdStateRoot(input.execution);
   await restoreDurableHarnessForExecution(input.db, input.execution, root);
   const identity = readRunnerdDurableIdentity(root);

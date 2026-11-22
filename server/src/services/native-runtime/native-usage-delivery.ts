@@ -11,6 +11,17 @@ import { persistUsageReceipt, type UsageReceiptEnvelope } from "../usage-receipt
 import { createNativeTurnAccounting, NATIVE_LOST_TURN_USAGE_EVIDENCE, NATIVE_TURN_LOST_ON_RESTORE, nativeUsageCostUsd, normalizeNativeUsage } from "./native-usage-accounting.js";
 
 const terminal = new Set(["turn.completed", "turn.failed", "turn.cancelled", "turn.interrupted"]);
+
+/** Unknown or missing model provenance is recorded, never a completion conflict. */
+export function usageModelConflicts(recorded: string | null | undefined, expected: string | null | undefined): boolean {
+  const concrete = (value: string | null | undefined) => {
+    const text = typeof value === "string" ? value.trim() : "";
+    return text && text !== "unknown" ? text : null;
+  };
+  const left = concrete(recorded);
+  const right = concrete(expected);
+  return left !== null && right !== null && left !== right;
+}
 const uuid = (identity: string) => {
   const hex = createHash("sha256").update(identity).digest("hex");
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-5${hex.slice(13, 16)}-a${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
@@ -59,7 +70,7 @@ export async function createNativeUsageContinuationDelivery(db: Db, input: Omit<
   if (!receipts.length && !recorded.biller) throw new Error("native_usage_continuation_receipts_missing");
   const billing = classification(receipts[0] ?? recorded as AdapterUsageCheckpoint);
   if (receipts.some(receipt => receiptFingerprint(classification(receipt)) !== receiptFingerprint(billing)
-    || receipt.model !== (input.provider.model ?? "unknown"))) throw new Error("native_usage_source_conflict");
+    || usageModelConflicts(receipt.model, input.provider.model))) throw new Error("native_usage_source_conflict");
   const terminalAcknowledged = source.finishedAt !== null && input.provider.kind === "codex"
     && !saved.some(row => terminal.has((row.receipt as UsageReceiptEnvelope).producerEvent?.eventType ?? ""));
   return createNativeUsageReceiver(db, { ...input, billing }, sourceId, saved, true, terminalAcknowledged);
